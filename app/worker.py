@@ -35,16 +35,15 @@ def process_scan(scan_id: str, session_factory: sessionmaker | None = None, stor
 
         _move(db, scan, ScanStatus.validating)
         try:
-            source = storage.path(original_key(scan))
-            geometry = processing.load_scan(source)
+            with storage.open(original_key(scan)) as source:
+                geometry = processing.load_scan(source)
             processing.check_geometry(geometry)
 
             _move(db, scan, ScanStatus.processing)
-            destination = storage.path(preview_key(scan))
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            processing.shrink(geometry).export(str(destination), file_type="glb")
+            preview = processing.shrink(geometry).export(file_type="glb")
+            storage.write(preview_key(scan), preview)
 
-            scan.preview_size = destination.stat().st_size
+            scan.preview_size = len(preview)
             scan.reduction_pct = round((1 - scan.preview_size / scan.original_size) * 100, 1)
             _move(db, scan, ScanStatus.ready)
         except processing.ScanRejected as exc:

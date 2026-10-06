@@ -77,6 +77,41 @@ Three helper scripts check the real thing:
 
 The RQ worker does not run on Windows. Use Docker for it. Tests call the worker function directly, so they work everywhere.
 
+## Deploy to Vercel
+
+The repo is set up to deploy on [Vercel](https://vercel.com). Vercel runs the app as short-lived serverless functions, so a few things work differently there. The app switches to a "Vercel mode" by itself when it sees Vercel's `VERCEL` variable:
+
+| | Docker (default) | Vercel mode |
+|---|---|---|
+| Where files live | Local disk | Inside Postgres |
+| Who processes a scan | A separate worker, through Redis | The upload request itself, so a scan is already `ready` when the upload returns |
+| Largest upload | 200 MB | **4 MB**. Vercel refuses request bodies over 4.5 MB |
+| Stuck-scan sweeper | Runs inside the API | A daily Vercel Cron call to `/api/v1/internal/sweep` |
+| Database connections | Pooled | Not pooled. Use your host's pooled connection string |
+
+To deploy:
+
+1. **Make a Postgres database.** The Neon integration in the Vercel Marketplace works. Copy the pooled connection string.
+2. **Create the tables once, from your computer.**
+   ```
+   set DATABASE_URL=<your connection string>        # macOS/Linux: export DATABASE_URL=...
+   alembic upgrade head
+   ```
+3. **Import the GitHub repo** at <https://vercel.com/new>. Vercel finds the FastAPI app on its own, and `vercel.json` sets the timeout and the cron.
+4. **Set three environment variables** in the project settings:
+
+   | Name | Value |
+   |---|---|
+   | `DATABASE_URL` | The connection string from step 1 |
+   | `SECRET_KEY` | A long random string: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+   | `CRON_SECRET` | Another random string. Vercel sends it to the cron call. Leave it out and the sweep endpoint stays off |
+
+5. **Deploy**, then open the URL. The viewer is the home page.
+
+The app refuses to start on Vercel without a real `SECRET_KEY`.
+
+**Not yet tried on Vercel itself.** Everything above was tested by running the app locally with Vercel's variables set, plus 29 tests of the new behaviour. Nobody has deployed it to a real Vercel project, so the first deploy is the real test. The things most likely to need a tweak are Vercel finding the app and the viewer files, and cold-start time. The 4 MB limit is the main thing to know: it comes from Vercel, and lifting it would mean uploading straight to Vercel Blob from the browser, which is not built.
+
 ## Roles
 
 | Action | Viewer | Editor | Owner |
@@ -121,7 +156,7 @@ Processing the largest sample takes about a second.
 
 ## What was checked
 
-- 113 Python tests pass. They cover the full upload path, every kind of bad file, and a 45-case permission matrix (9 endpoints, 5 kinds of caller). I broke the code on purpose twice to confirm the tests notice: letting viewers upload, and adding a model column with no migration. Both were caught.
+- 142 Python tests pass. They cover the full upload path, every kind of bad file, a 45-case permission matrix (9 endpoints, 5 kinds of caller), and Vercel mode. I broke the code on purpose twice to confirm the tests notice: letting viewers upload, and adding a model column with no migration. Both were caught.
 - 6 tests cover the page's helper functions.
 - The browser check passes in a real browser, including the viewer role.
 - The Docker stack ran end to end on real PostgreSQL, Redis and an RQ worker: migrations ran, seven of the eight samples were accepted and finished in under five seconds (the eighth, a text file renamed to `.ply`, was rejected at upload), the four good scans became valid GLB previews, and the three broken ones failed with a clear reason.
@@ -131,7 +166,7 @@ Processing the largest sample takes about a second.
 
 - **PLY only.** Other formats are turned away.
 - **Tested on generated scans only.** No real scans were available.
-- **Single machine.** Files sit on local disk behind a small storage interface. S3 would be a new implementation of that interface.
+- **Storage.** Files sit on local disk, or inside Postgres in Vercel mode, behind a small storage interface. S3 would be a new implementation of that interface. Database storage keeps whole files in memory and grows the database, so it only suits small files.
 - **No Draco compression.** The GLB is plain, so the viewer needs no decoder.
 - **Mesh previews lose vertex colours.** Point clouds keep theirs.
 - **Point clouds are thinned by random sampling.** Density can look uneven. Voxel downsampling would be the next thing to try.
@@ -152,6 +187,7 @@ app/
   worker.py      the background job
   maintenance.py fails scans that are stuck
 migrations/      Alembic migrations
+vercel.json      Vercel settings (timeout, cron). .vercelignore trims the bundle
 viewer/          the page, plus Three.js in vendor/
 tools/           sample scan generator, size measurement, browser and stack checks
 tests/           pytest suite

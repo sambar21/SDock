@@ -29,6 +29,7 @@ def client(tmp_path):
 
     test_client = TestClient(app)
     test_client.queued = []
+    test_client.Session = Session
 
     def run_jobs():
         while test_client.queued:

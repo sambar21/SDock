@@ -1,0 +1,15 @@
+# Left out of the deployed bundle. None of it is needed at runtime.
+tests/
+tools/
+samples/
+screenshots/
+docs/
+migrations/
+alembic.ini
+Dockerfile
+docker-compose.yml
+requirements-dev.txt
+.env.example
+PLAN.md
+LOG.md
+viewer/*.test.mjs

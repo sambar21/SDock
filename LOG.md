@@ -354,6 +354,68 @@ The average is **89.6%**. That is about 90 percent, not at least 90. Four scans 
 - **Why:** Everything before this ran with a fake queue and SQLite. This is the only check of real Postgres, Redis and RQ together.
 - **Trade-off:** It needs a running stack, so it is a manual check and not part of `pytest`.
 
+### D-045: A separate "Vercel mode", not a rewrite
+- **Date:** 2026-10-06
+- **Phase:** 8 (Vercel packaging)
+- **Decision:** When Vercel's own `VERCEL` variable is present, the app defaults to database storage, inline processing, a 4 MB upload cap, no background sweeper, and `ENVIRONMENT=production`. Every default can still be overridden. Docker behaviour is unchanged.
+- **Why:** Research on Vercel's docs found four mismatches with this design: request bodies are capped at 4.5 MB, there is no disk that lasts, there is no long-running worker, and there is no Redis. Vercel Queues has a Python SDK, but it is in beta. Blob client uploads (the way past the 4.5 MB cap) are documented for the JavaScript SDK, and I found no documented Python equivalent. Both would have been code I could not test without a Vercel account.
+- **Alternatives:** Build on Vercel Queues and Blob (untestable here, beta, and a larger rewrite). Host on a platform that runs Docker (no changes needed, but not what was asked).
+- **Trade-off:** Vercel mode is limited to small scans (4 MB), but every line of it is tested locally. The big-scan path stays on Docker.
+- **Revisit if:** Large scans are needed on Vercel. Browser-to-Blob uploads plus Vercel Queues would be the route.
+
+### D-046: Storage interface now deals in bytes and streams, not file paths
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** Dropped `path()` from the storage interface and added `write()`. The worker reads with `open()` and writes the preview with `write()`. The preview route streams from `open()`.
+- **Why:** Database storage has no file path to hand out. This also makes an S3 backend a drop-in later.
+- **Trade-off:** The worker now holds the whole preview in memory before writing it, where before it exported straight to disk. Previews are small, so this is fine.
+- **Check:** All 113 existing tests passed unchanged after the refactor, and the real Docker stack passed again afterwards.
+
+### D-047: Files stored as database rows in Vercel mode
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** A `stored_files` table (key, bytes) holds originals and previews. Added as migration `0002`.
+- **Why:** The only storage that needs no extra service, no beta SDK and no account, and it can be tested here with SQLite.
+- **Trade-off:** Both the original and the preview are kept, so each scan costs roughly its own size plus a tenth. On a small free database that is room for a modest number of scans. Whole files pass through memory. Deleting a scan frees its rows.
+- **Revisit if:** The database fills up. Switch to Blob storage, or drop the original after processing.
+
+### D-048: Inline processing in Vercel mode
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** In Vercel mode the upload request processes the scan before returning. The `202` response already shows `ready` or `failed`.
+- **Why:** There is no worker to hand the job to. At a 4 MB cap, processing takes well under a second, and the function allows 60 seconds.
+- **Trade-off:** Uploads take a little longer. If the function is killed mid-job, the scan stays `processing` until the sweeper fails it. The page still polls, so nothing breaks.
+- **Also:** The response is refreshed from the database after processing, so it shows the real status in every mode. Without that, the object held by the request would be stale.
+
+### D-049: Sweeper runs as a Vercel Cron call
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** `GET /api/v1/internal/sweep` is called daily by Vercel Cron. It needs `Authorization: Bearer <CRON_SECRET>`, compared in constant time. With no `CRON_SECRET` set it answers `404` as if it did not exist. It is hidden from the public docs.
+- **Why:** The in-process sweeper depends on a long-lived process, which serverless does not have.
+- **Trade-off:** Daily is the most a free Vercel plan allows (this is from my reading of the docs, not from a test), so a stuck scan can wait up to a day. The 15 minute threshold only decides what counts as stuck once the sweep runs.
+
+### D-050: Database URL cleanup and no connection pool on Vercel
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** `postgres://` and `postgresql://` URLs get the driver name added, since hosts hand out URLs without it. On Vercel the engine uses `NullPool`.
+- **Why:** Many function instances each holding their own pool can exhaust the database's connections. The host's pooled URL does the pooling.
+- **Trade-off:** Every request opens a fresh connection, which adds latency. Not measured.
+
+### D-051: The viewer folder is mounted with a literal relative path
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** `StaticFiles(directory="viewer")` replaces a path built from `__file__`.
+- **Why:** Vercel's docs say it finds static folders by reading the mount call, so a computed path might not be recognised.
+- **Trade-off:** The app must now start from the project folder. Docker's `WORKDIR` and every script here already do.
+- **Not verified:** I have not seen Vercel pick it up.
+
+### D-052: What the Vercel bundle leaves out
+- **Date:** 2026-10-06
+- **Phase:** 8
+- **Decision:** `.vercelignore` drops tests, tools, samples, screenshots, docs, migrations, Docker files and the plan and log. Migrations are run by hand from a laptop, not at deploy time.
+- **Why:** Smaller bundle, and nothing public that is not needed. Running migrations on every deploy is risky if two deploys overlap.
+- **Trade-off:** A step to remember. A test checks that the ignore list never removes `app`, `viewer`, `requirements.txt` or `vercel.json`.
+
 ---
 
 ## Verification (phase 7)
@@ -372,6 +434,18 @@ All run on 2026-10-06.
 | Fresh copy of the project, README steps only | Install, `alembic upgrade head`, 113 tests passed |
 
 Not covered: real scans, load, many users, a real worker crash mid-job (the sweeper is unit-tested only), and Windows-native RQ.
+
+## Verification (phase 8, Vercel mode)
+
+| Check | Result |
+|---|---|
+| `pytest` | 142 passed (113 before, plus 29 for Vercel mode) |
+| Storage backends | The same 5 contract tests pass on disk and on the database |
+| Real server with Vercel's variables set, SQLite, `alembic upgrade head` | Small scans were `ready` when the upload returned. The two large samples got `413 file_too_large`. Broken files failed with reasons. Cron endpoint: 404 without the secret, `{"failed":0}` with it. Viewer served |
+| Browser check after the storage refactor | Passed |
+| Docker stack after the refactor, on real Postgres | Passed. Migration `0002` applied, all 7 accepted samples processed, reductions unchanged at 89.6% |
+
+Not covered: an actual Vercel deployment. Entry-point detection, static-file promotion, cold starts, the bundle size, and real Neon behaviour are all unconfirmed.
 
 ## Trade-offs summary
 | Choice | Gain | Cost |
@@ -394,13 +468,14 @@ Not covered: real scans, load, many users, a real worker crash mid-job (the swee
 | Random point sampling | Simple, repeatable | Uneven density possible |
 | Plain GLB, no Draco | No decoder in the viewer | Larger previews |
 | Undo upload on queue failure | Nothing left half-done | User must retry |
-| Keep the original file | Can re-process | More storage |
+| Keep the original file | Can re-process | More storage (in Vercel mode, in the database) |
 | Stuck-scan sweeper | Nothing spins forever | Failed scans are not retried |
 | No frontend build step | Nothing to break | No bundling or TypeScript |
 | Three.js vendored | Offline, pinned | 2.3 MB in repo, manual upgrades |
 | Fetch then parse the GLB | Token stays out of URLs | No progress bar |
 | sessionStorage token | Simple | Readable by injected scripts |
 | Poll every 2s | Simple | Small lag, repeated requests |
+| Vercel mode (DB storage, inline, 4 MB) | Fully testable, no beta services | Small scans only on Vercel |
 | Manual browser and stack checks | Real browser and real services covered | They can go stale |
 | trimesh over Open3D | Installs on Python 3.13 (to verify) | More hand-written point cloud code |
 
@@ -544,6 +619,29 @@ Use this template for each one.
 - **Root cause:** `delete_prefix` removes the scan's folder only. Deleting a scan does the same.
 - **Fix:** Not yet. Harmless, but it leaves one empty folder per organization that ever had a rejected upload or deleted scan. A cleanup could remove empty parents.
 - **Status:** open (cosmetic)
+
+### B-017: A test relied on how FastAPI lists routes
+- **Date found:** 2026-10-06
+- **Phase:** 8
+- **What happened:** A new test failed with `'_IncludedRouter' object has no attribute 'path'`. It had looped over `app.routes` to find the cron path.
+- **Root cause:** The installed FastAPI wraps included routers, so routes are no longer a flat list.
+- **Fix:** The test now calls the cron path the way Vercel will, with the secret, and expects `200`. That is a better test anyway, because it exercises the route.
+- **Status:** fixed
+
+### B-018: Could not generate the migration on a fresh database
+- **Date found:** 2026-10-06
+- **Phase:** 8
+- **What happened:** `alembic revision --autogenerate` failed with `Target database is not up to date`.
+- **Root cause:** I had deleted `dev.db`, so there was nothing at the latest version to compare against.
+- **Fix:** Ran `alembic upgrade head` on a scratch database first, then generated `0002`.
+- **Status:** fixed
+
+### B-019: Vercel's own 413 is not JSON
+- **Date found:** 2026-10-06
+- **Phase:** 8
+- **What happened:** Found while reading the docs, not by a test. Past 4.5 MB, Vercel rejects the request before the app sees it, so the page's error handler would show a bare status text.
+- **Fix:** The page now shows "That file is too large for this deployment." when a 413 has no JSON body. The app's own cap sits at 4 MB so it normally answers first.
+- **Status:** fixed in code, never seen on a real Vercel deployment
 
 ### B-002: Test client deprecation warning
 - **Date found:** 2026-10-06

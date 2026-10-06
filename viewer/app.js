@@ -60,7 +60,10 @@ async function api(path, { method = "GET", json, form, raw = false } = {}) {
     let message = response.statusText;
     try {
       message = (await response.json()).message || message;
-    } catch {}
+    } catch {
+      // Not our JSON. A host in front of the API (such as Vercel) may have refused the upload itself.
+      if (response.status === 413) message = "That file is too large for this deployment.";
+    }
     throw new ApiFailure(response.status, message);
   }
   if (raw) return response;

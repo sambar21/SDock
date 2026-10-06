@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Enum, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Enum, Float, ForeignKey, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -83,3 +83,12 @@ class Scan(Base):
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class StoredFile(Base):
+    """A file kept inside the database, for hosts with no disk that lasts (see DatabaseStorage)."""
+
+    __tablename__ = "stored_files"
+
+    key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)

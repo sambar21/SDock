@@ -3,7 +3,7 @@
 Meshes lose triangles, point clouds lose points. The result is a GLB, which
 the browser viewer loads directly.
 """
-from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 import trimesh
@@ -19,9 +19,9 @@ class ScanRejected(Exception):
     """The scan is unusable. The message is written for the person who uploaded it."""
 
 
-def load_scan(path: Path) -> trimesh.Trimesh | trimesh.PointCloud:
+def load_scan(source: BinaryIO) -> trimesh.Trimesh | trimesh.PointCloud:
     try:
-        geometry = trimesh.load(str(path), file_type="ply", process=False)
+        geometry = trimesh.load(source, file_type="ply", process=False)
     except Exception as exc:
         raise ScanRejected(f"The file could not be read as a PLY scan ({exc}).") from exc
     if not isinstance(geometry, (trimesh.Trimesh, trimesh.PointCloud)):

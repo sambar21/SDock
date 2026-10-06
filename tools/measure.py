@@ -20,7 +20,8 @@ def measure(folder: Path) -> list[tuple[str, int, int, float, float]]:
             if path.name.startswith("bad_"):
                 continue
             started = time.perf_counter()
-            geometry = processing.load_scan(path)
+            with open(path, "rb") as source:
+                geometry = processing.load_scan(source)
             processing.check_geometry(geometry)
             out = Path(tmp) / f"{path.stem}.glb"
             processing.shrink(geometry).export(str(out), file_type="glb")

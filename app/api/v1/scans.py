@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,12 @@ from app.services.storage import FileTooLarge, Storage, get_storage
 from app.worker import preview_key
 
 router = APIRouter(tags=["scans"], responses=errors(401, 403, 404))
+
+
+def _chunks(source, size: int = 1024 * 1024):
+    with source:
+        while chunk := source.read(size):
+            yield chunk
 
 
 @router.post(
@@ -70,6 +76,7 @@ def upload_scan(
         db.commit()
         storage.delete_prefix(f"{org_id}/{scan_id}")
         raise ApiError(503, "queue_unavailable", "Processing is unavailable right now. Try again shortly.")
+    db.refresh(scan)  # inline processing may already have finished it
     return scan
 
 
@@ -99,13 +106,20 @@ def get_scan(scan: Scan = Depends(require_scan_role(Role.viewer))):
 @router.get(
     "/scans/{scan_id}/preview",
     summary="Download the GLB preview",
-    response_class=FileResponse,
     responses={200: {"content": {"model/gltf-binary": {}}, "description": "The preview, as a binary glTF."}, **errors(409)},
 )
 def get_preview(scan: Scan = Depends(require_scan_role(Role.viewer)), storage: Storage = Depends(get_storage)):
     if scan.status != ScanStatus.ready:
         raise ApiError(409, "not_ready", f"The preview is not available yet (status: {scan.status.value}).")
-    return FileResponse(storage.path(preview_key(scan)), media_type="model/gltf-binary")
+    try:
+        preview = storage.open(preview_key(scan))
+    except FileNotFoundError:
+        raise ApiError(404, "not_found", "The preview file is missing.")
+    return StreamingResponse(
+        _chunks(preview),
+        media_type="model/gltf-binary",
+        headers={"Content-Length": str(scan.preview_size)},
+    )
 
 
 @router.delete("/scans/{scan_id}", status_code=204)

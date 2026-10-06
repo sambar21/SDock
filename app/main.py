@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -48,8 +47,9 @@ app = FastAPI(title="Scan Service", version="1.0.0", description=DESCRIPTION, op
 install_error_handlers(app)
 app.include_router(api_router)
 
-VIEWER_DIR = Path(__file__).resolve().parent.parent / "viewer"
-app.mount("/viewer", StaticFiles(directory=VIEWER_DIR, html=True), name="viewer")
+# A plain relative path, because Vercel finds static folders by reading this line.
+# The app is always started from the project folder (Docker's WORKDIR does the same).
+app.mount("/viewer", StaticFiles(directory="viewer", html=True), name="viewer")
 
 
 @app.get("/", include_in_schema=False)
