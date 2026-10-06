@@ -1,6 +1,6 @@
 import os
 
-from pydantic import model_validator
+from pydantic import ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEV_SECRET = "dev-only-secret-change-me-before-deploying"
@@ -53,7 +53,9 @@ class Settings(BaseSettings):
         # Tokens are not used when sign-in is off, so no secret is needed then.
         needs_secret = self.environment != "dev" and not self.auth_disabled
         if needs_secret and (self.secret_key == DEV_SECRET or len(self.secret_key) < 32):
-            raise ValueError("Set SECRET_KEY to a random value of at least 32 characters when ENVIRONMENT is not 'dev'.")
+            raise ValueError("SECRET_KEY is missing or too short (it needs 32 or more characters). For a demo with no sign-in, set AUTH_DISABLED=true instead.")
+        if os.getenv("VERCEL") and self.database_url.startswith("sqlite"):
+            raise ValueError("Set DATABASE_URL to a Postgres connection string. Vercel has no disk to keep a SQLite file on.")
         if self.storage_backend not in ("local", "database"):
             raise ValueError("STORAGE_BACKEND must be 'local' or 'database'.")
         if self.queue_backend not in ("redis", "inline"):
@@ -61,4 +63,17 @@ class Settings(BaseSettings):
         return self
 
 
-settings = Settings()
+def load_settings() -> tuple[Settings, str | None]:
+    """Read the settings. If they are invalid, return defaults plus a message saying why.
+
+    Letting the import crash shows a host's blank error page. Returning the problem lets the
+    app answer every request with a readable page instead (see app/main.py).
+    """
+    try:
+        return Settings(), None
+    except ValidationError as exc:
+        reasons = "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in exc.errors())
+        return Settings.model_construct(), reasons
+
+
+settings, CONFIG_ERROR = load_settings()

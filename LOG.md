@@ -446,6 +446,21 @@ The average is **89.6%**. That is about 90 percent, not at least 90. Four scans 
 - **Why:** The shared user's `!` hash would otherwise have caused a 500 if anyone ever reached the login check for it, for example after turning sign-in back on.
 - **Trade-off:** A genuinely corrupted hash in the database now fails quietly as a wrong password, which hides a data problem. That is a small price for never leaking a stack trace at the login form.
 
+### D-057: Bad settings produce a readable page, not a crash
+- **Date:** 2026-10-06
+- **Phase:** 10 (Setup diagnostics)
+- **Decision:** If the settings are invalid, loading them no longer raises at import. It returns the problem, and a middleware answers every request, including `/docs`, `/viewer/` and the API, with a `503` page that states the problem and lists each expected variable as "set" or "not set". The page never shows values, and it HTML-escapes the message.
+- **Why:** Two Vercel deploys in a row failed with a blank `FUNCTION_INVOCATION_FAILED` page, and the reason was only in the logs, which I could not see. The second time, the logs showed the new code running but no variables arriving, and I could not tell whether they were unset, scoped to the wrong environment, or misnamed.
+- **Alternatives:** Keep crashing (what failed twice). Show the page only in dev (useless where it is needed).
+- **Trade-off:** A public visitor to a broken deployment can see which variable names exist and whether they are set. No values, and only while the app is broken. A broken app that answers `503` with a page is also easier to mistake for a working one in a health check than a crash, so a monitor should look at the status code, not just whether something answered.
+
+### D-058: Vercel mode refuses to start without a Postgres URL
+- **Date:** 2026-10-06
+- **Phase:** 10
+- **Decision:** On Vercel, a `DATABASE_URL` that is missing or points at SQLite is a settings error, and it shows on the setup page.
+- **Why:** Vercel has no disk that lasts, so a SQLite default would load fine and then fail on the first request with an unclear "read-only database" error.
+- **Trade-off:** Local simulations of Vercel mode now need a Postgres URL, or must set the individual switches (`STORAGE_BACKEND`, `QUEUE_BACKEND`) by hand instead of the `VERCEL` variable.
+
 ---
 
 ## Verification (phase 7)
@@ -489,6 +504,18 @@ Not covered: an actual Vercel deployment. Entry-point detection, static-file pro
 
 Not covered: the demo mode on Vercel itself with a real Neon database.
 
+## Verification (phase 10, setup diagnostics)
+
+| Check | Result |
+|---|---|
+| `pytest` | 162 passed (154 before, plus 8 for the setup page and the database check) |
+| Vercel's environment, no variables at all | `503` with the setup page. Every expected variable shown as "not set" |
+| Vercel's environment, `AUTH_DISABLED=true` but no `DATABASE_URL` | `503` with the setup page naming the database |
+| Setup page rendered in Edge | Readable in light mode. Message in red, four variables listed with set or not set |
+| Values never shown | Test sets a secret, then checks it is absent from the page |
+
+Not covered: the page appearing on the real Vercel deployment, and why the variables did not arrive there.
+
 ## Trade-offs summary
 | Choice | Gain | Cost |
 |---|---|---|
@@ -520,6 +547,7 @@ Not covered: the demo mode on Vercel itself with a real Neon database.
 | Vercel mode (DB storage, inline, 4 MB) | Fully testable, no beta services | Small scans only on Vercel |
 | Open demo mode (opt-in) | No accounts, no secrets, works for a demo | Anyone can upload and delete |
 | Page asks the server for config | One page serves both modes | One extra request on load |
+| Readable setup page on bad settings | The reason is visible in the browser | Shows variable names, and a monitor must check the 503 |
 | Manual browser and stack checks | Real browser and real services covered | They can go stale |
 | trimesh over Open3D | Installs on Python 3.13 (to verify) | More hand-written point cloud code |
 
@@ -703,6 +731,32 @@ Use this template for each one.
 - **What happened:** A test that logged in as `demo@open.local` got `422`, not `401`.
 - **Root cause:** The email check rejects the reserved `.local` domain before any password is looked at. The test was wrong, and the real behaviour is safer than the one I had assumed.
 - **Fix:** The test now accepts either answer for that address, and a separate test feeds junk hash values straight to `verify_password` to cover the crash it was meant to catch (D-056).
+- **Status:** fixed
+
+### B-022: Second Vercel deploy still crashed, with the open-mode code running
+- **Date found:** 2026-10-06
+- **Phase:** 10
+- **What happened:** Logs at 17:31 showed the new code (`from app.api.v1 import auth, config, ...`) but the same `SECRET_KEY` error. So the open-mode commit was deployed, yet `AUTH_DISABLED` was not seen.
+- **Evidence:** In the error, the input dictionary began with `environment` and held only Vercel's own defaults. Variables from the environment would have come first, so it looks like no variables reached the function at all, not just `AUTH_DISABLED`.
+- **Root cause:** Not known. Variables missing, added to a different environment (Preview or Development instead of Production), added to a different project, or added after the build without a redeploy would all look like this. I cannot see the Vercel dashboard.
+- **Fix:** Did not fix the cause. Made the app report it (D-057), so the next load of the site names what is missing.
+- **Status:** open until confirmed on Vercel.
+- **Lesson:** I told the user the variables were the likely fix and wrote steps for it. That was a reasonable guess but I could not verify it, and I should have built the diagnostic page before the first deploy, not after the second failure.
+
+### B-023: The old tests assumed Vercel mode needs no database URL
+- **Date found:** 2026-10-06
+- **Phase:** 10
+- **What happened:** After D-058, two tests that built settings with `VERCEL=1` failed with a missing `DATABASE_URL` error.
+- **Root cause:** The new rule is correct, and the tests were written before it.
+- **Fix:** The tests now pass a Postgres URL. New tests cover the missing-URL case, the demo case, the setup page, escaping, and that values never appear.
+- **Status:** fixed
+
+### B-024: One test checked a value the fallback settings do not have
+- **Date found:** 2026-10-06
+- **Phase:** 10
+- **What happened:** `test_loading_bad_settings_reports_instead_of_crashing` expected the fallback settings to carry Vercel's 4 MB cap. They carry plain defaults (200 MB).
+- **Root cause:** My assumption. The fallback object is built without reading the environment, and every request is blocked by the setup page anyway, so the values never matter.
+- **Fix:** The test now only checks that a usable settings object comes back.
 - **Status:** fixed
 
 ### B-002: Test client deprecation warning

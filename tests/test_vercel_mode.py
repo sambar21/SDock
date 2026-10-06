@@ -22,6 +22,7 @@ from tools import scangen
 
 ROOT = Path(__file__).resolve().parent.parent
 STRONG = "k" * 40
+POSTGRES = "postgresql://user:pass@host/db"
 
 
 # ---- The two storage backends must behave the same ----
@@ -76,7 +77,7 @@ def test_delete_prefix_removes_that_scan_only(store):
 
 def test_vercel_switches_on_the_serverless_defaults(monkeypatch):
     monkeypatch.setenv("VERCEL", "1")
-    s = Settings(secret_key=STRONG)
+    s = Settings(secret_key=STRONG, database_url=POSTGRES)
     assert (s.storage_backend, s.queue_backend, s.max_upload_mb) == ("database", "inline", 4)
     assert s.sweep_enabled is False
     assert s.environment == "production"
@@ -84,7 +85,7 @@ def test_vercel_switches_on_the_serverless_defaults(monkeypatch):
 
 def test_explicit_settings_beat_the_vercel_defaults(monkeypatch):
     monkeypatch.setenv("VERCEL", "1")
-    s = Settings(secret_key=STRONG, max_upload_mb=3, storage_backend="local")
+    s = Settings(secret_key=STRONG, database_url=POSTGRES, max_upload_mb=3, storage_backend="local")
     assert (s.max_upload_mb, s.storage_backend) == (3, "local")
 
 
@@ -246,3 +247,74 @@ def test_requirements_cover_what_the_app_imports():
     text = (ROOT / "requirements.txt").read_text().lower()
     for package in ("fastapi", "sqlalchemy", "psycopg", "numpy", "trimesh", "fast-simplification", "pwdlib", "pyjwt"):
         assert package in text
+
+
+# ---- Wrong settings should explain themselves ----
+
+def test_vercel_without_a_database_url_is_refused_with_a_clear_reason(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        Settings(secret_key=STRONG)
+
+
+def test_a_demo_on_vercel_still_needs_a_database(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        Settings(auth_disabled=True)
+    assert Settings(auth_disabled=True, database_url=POSTGRES).auth_disabled
+
+
+def test_loading_bad_settings_reports_instead_of_crashing(monkeypatch):
+    from app.core.config import load_settings
+
+    monkeypatch.setenv("VERCEL", "1")
+    for name in ("SECRET_KEY", "DATABASE_URL", "AUTH_DISABLED"):
+        monkeypatch.delenv(name, raising=False)
+    loaded, problem = load_settings()
+    assert problem and "SECRET_KEY" in problem
+    assert isinstance(loaded, Settings)  # a usable object, so the app can still import and explain
+
+
+def test_loading_good_settings_reports_no_problem(monkeypatch):
+    from app.core.config import load_settings
+
+    monkeypatch.delenv("VERCEL", raising=False)
+    assert load_settings()[1] is None
+
+
+@pytest.fixture()
+def broken_settings(client, monkeypatch):
+    monkeypatch.setattr("app.main.CONFIG_ERROR", "Set SECRET_KEY to a random value.")
+    return client
+
+
+def test_a_broken_setup_answers_every_path_with_a_readable_page(broken_settings):
+    for path in ("/", "/viewer/", "/api/v1/health", "/api/v1/orgs", "/docs"):
+        response = broken_settings.get(path, follow_redirects=False)
+        assert response.status_code == 503, path
+        assert "text/html" in response.headers["content-type"]
+        assert "Set SECRET_KEY to a random value." in response.text
+        assert "Setup needed" in response.text
+
+
+def test_the_setup_page_lists_names_and_status_but_never_values(broken_settings, monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "super-secret-value-0123456789")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    page = broken_settings.get("/").text
+    assert "SECRET_KEY" in page and "DATABASE_URL" in page
+    assert "super-secret-value-0123456789" not in page
+    row = next(r for r in page.split("<tr>") if "DATABASE_URL" in r)
+    assert "not set" in row
+    row = next(r for r in page.split("<tr>") if "SECRET_KEY" in r)
+    assert "not set" not in row
+
+
+def test_the_setup_page_escapes_the_message(broken_settings, monkeypatch):
+    monkeypatch.setattr("app.main.CONFIG_ERROR", "<script>alert(1)</script>")
+    page = broken_settings.get("/").text
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_a_good_setup_is_not_affected(client):
+    assert client.get("/api/v1/health").status_code == 200

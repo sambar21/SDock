@@ -116,7 +116,9 @@ To deploy:
 
 5. **Deploy**, then open the URL. The viewer is the home page. After changing a variable, redeploy, because existing deployments do not pick up new values.
 
-**How far this has been tried on Vercel.** A first deploy got as far as loading the app, so Vercel found it and installed the dependencies. It then stopped because `SECRET_KEY` was not set, which is what open mode is for. Open mode with no secrets was tested locally with Vercel's variables, and by 12 tests. It has not yet been seen running on Vercel with a real database, so cold-start time and the Neon connection are still unconfirmed. The 4 MB limit comes from Vercel. Lifting it would mean uploading straight to Vercel Blob from the browser, which is not built.
+If you see a **Setup needed** page, the app could not start. It names the problem and shows which of the variables above are set and which are not. On Vercel it also needs `DATABASE_URL`, because there is no disk to keep a SQLite file on.
+
+**How far this has been tried on Vercel.** A first deploy got as far as loading the app, so Vercel found it and installed the dependencies. It then stopped because the settings were missing, and the app could not see any of the variables that were meant to be set. Open mode with no secrets was tested locally with Vercel's variables, and by 12 tests. It has not yet been seen running on Vercel with a real database, so cold-start time and the Neon connection are still unconfirmed. The 4 MB limit comes from Vercel. Lifting it would mean uploading straight to Vercel Blob from the browser, which is not built.
 
 ## Roles
 
@@ -162,7 +164,7 @@ Processing the largest sample takes about a second.
 
 ## What was checked
 
-- 154 Python tests pass. They cover the full upload path, every kind of bad file, a 45-case permission matrix (9 endpoints, 5 kinds of caller), Vercel mode, and the no-sign-in demo mode. I broke the code on purpose twice to confirm the tests notice: letting viewers upload, and adding a model column with no migration. Both were caught.
+- 162 Python tests pass. They cover the full upload path, every kind of bad file, a 45-case permission matrix (9 endpoints, 5 kinds of caller), Vercel mode, and the no-sign-in demo mode. I broke the code on purpose twice to confirm the tests notice: letting viewers upload, and adding a model column with no migration. Both were caught.
 - 6 tests cover the page's helper functions.
 - The browser check passes in a real browser, including the viewer role.
 - The Docker stack ran end to end on real PostgreSQL, Redis and an RQ worker: migrations ran, seven of the eight samples were accepted and finished in under five seconds (the eighth, a text file renamed to `.ply`, was rejected at upload), the four good scans became valid GLB previews, and the three broken ones failed with a clear reason.

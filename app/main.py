@@ -6,8 +6,9 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
-from app.core.config import settings
+from app.core.config import CONFIG_ERROR, settings
 from app.core.errors import install_error_handlers
+from app.core.setup_problem import problem_page
 from app.maintenance import sweep_forever
 
 
@@ -68,4 +69,15 @@ async def reject_oversized_bodies(request: Request, call_next):
     if declared and declared.isdigit() and int(declared) > limit:
         body = {"error": "file_too_large", "message": f"Files can be at most {settings.max_upload_mb} MB."}
         return JSONResponse(body, status_code=413)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def explain_bad_settings(request: Request, call_next):
+    """If the settings are invalid, answer everything with a page that says what is missing.
+
+    Added last, so it runs first and nothing else touches the half-configured app.
+    """
+    if CONFIG_ERROR:
+        return problem_page(CONFIG_ERROR)
     return await call_next(request)
