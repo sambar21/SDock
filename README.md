@@ -71,7 +71,7 @@ Three helper scripts check the real thing:
 
 | Script | What it does |
 |---|---|
-| `python -m tools.browser_check` | Drives the real page in Microsoft Edge: signs up, uploads, waits, confirms the 3D view draws, and signs in as a viewer. Add `--gif` to rebuild the demo GIF. Needs `pip install playwright pillow`. |
+| `python -m tools.browser_check` | Drives the real page in Microsoft Edge: signs up, uploads, waits, confirms the 3D view draws, and signs in as a viewer. Add `--gif` to rebuild the demo GIF, or `--open` to check the no-sign-in demo mode instead. Needs `pip install playwright pillow`. |
 | `python -m tools.stack_check http://localhost:8000` | Uploads every sample to a running Docker stack and checks the previews it gets back. |
 | `python -m tools.measure samples` | Prints the size reduction for each sample scan. |
 
@@ -98,19 +98,25 @@ To deploy:
    alembic upgrade head
    ```
 3. **Import the GitHub repo** at <https://vercel.com/new>. Vercel finds the FastAPI app on its own, and `vercel.json` sets the timeout and the cron.
-4. **Set three environment variables** in the project settings:
+4. **Set the environment variables** in the project settings. For a public demo with no sign-in, two are enough:
 
    | Name | Value |
    |---|---|
    | `DATABASE_URL` | The connection string from step 1 |
-   | `SECRET_KEY` | A long random string: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
-   | `CRON_SECRET` | Another random string. Vercel sends it to the cron call. Leave it out and the sweep endpoint stays off |
+   | `AUTH_DISABLED` | `true` |
 
-5. **Deploy**, then open the URL. The viewer is the home page.
+   With `AUTH_DISABLED=true` there is no sign-in screen. Everyone who opens the page shares one workspace and can upload and delete. That suits a demo, but do not use it for anything private.
 
-The app refuses to start on Vercel without a real `SECRET_KEY`.
+   To keep sign-in (accounts and roles), leave `AUTH_DISABLED` out and set these instead:
 
-**Not yet tried on Vercel itself.** Everything above was tested by running the app locally with Vercel's variables set, plus 29 tests of the new behaviour. Nobody has deployed it to a real Vercel project, so the first deploy is the real test. The things most likely to need a tweak are Vercel finding the app and the viewer files, and cold-start time. The 4 MB limit is the main thing to know: it comes from Vercel, and lifting it would mean uploading straight to Vercel Blob from the browser, which is not built.
+   | Name | Value |
+   |---|---|
+   | `SECRET_KEY` | A long random string: `python -c "import secrets; print(secrets.token_urlsafe(48))"`. The app refuses to start on Vercel without one |
+   | `CRON_SECRET` | Another random string. Vercel sends it to the daily sweep call. Leave it out and the sweep endpoint stays off |
+
+5. **Deploy**, then open the URL. The viewer is the home page. After changing a variable, redeploy, because existing deployments do not pick up new values.
+
+**How far this has been tried on Vercel.** A first deploy got as far as loading the app, so Vercel found it and installed the dependencies. It then stopped because `SECRET_KEY` was not set, which is what open mode is for. Open mode with no secrets was tested locally with Vercel's variables, and by 12 tests. It has not yet been seen running on Vercel with a real database, so cold-start time and the Neon connection are still unconfirmed. The 4 MB limit comes from Vercel. Lifting it would mean uploading straight to Vercel Blob from the browser, which is not built.
 
 ## Roles
 
@@ -156,7 +162,7 @@ Processing the largest sample takes about a second.
 
 ## What was checked
 
-- 142 Python tests pass. They cover the full upload path, every kind of bad file, a 45-case permission matrix (9 endpoints, 5 kinds of caller), and Vercel mode. I broke the code on purpose twice to confirm the tests notice: letting viewers upload, and adding a model column with no migration. Both were caught.
+- 154 Python tests pass. They cover the full upload path, every kind of bad file, a 45-case permission matrix (9 endpoints, 5 kinds of caller), Vercel mode, and the no-sign-in demo mode. I broke the code on purpose twice to confirm the tests notice: letting viewers upload, and adding a model column with no migration. Both were caught.
 - 6 tests cover the page's helper functions.
 - The browser check passes in a real browser, including the viewer role.
 - The Docker stack ran end to end on real PostgreSQL, Redis and an RQ worker: migrations ran, seven of the eight samples were accepted and finished in under five seconds (the eighth, a text file renamed to `.ply`, was rejected at upload), the four good scans became valid GLB previews, and the three broken ones failed with a clear reason.
@@ -175,7 +181,7 @@ Processing the largest sample takes about a second.
 - **Uploads declared with no size** are only caught after they arrive. Put a reverse proxy in front for real use.
 - **Failed scans are not retried.** The user uploads again.
 - **No scale testing.** Nothing here says how it behaves with many users or very large scans.
-- Outside `ENVIRONMENT=dev`, the app refuses to start unless `SECRET_KEY` is set to 32 or more characters.
+- Outside `ENVIRONMENT=dev`, the app refuses to start unless `SECRET_KEY` is set to 32 or more characters, unless sign-in is switched off.
 
 ## Where things are
 

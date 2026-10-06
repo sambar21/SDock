@@ -416,6 +416,36 @@ The average is **89.6%**. That is about 90 percent, not at least 90. Four scans 
 - **Why:** Smaller bundle, and nothing public that is not needed. Running migrations on every deploy is risky if two deploys overlap.
 - **Trade-off:** A step to remember. A test checks that the ignore list never removes `app`, `viewer`, `requirements.txt` or `vercel.json`.
 
+### D-053: Open demo mode, switched on by `AUTH_DISABLED=true`
+- **Date:** 2026-10-06
+- **Phase:** 9 (Demo mode)
+- **Decision:** One setting turns sign-in off. Everyone who opens the page acts as one shared user inside one shared workspace. It is off by default, so the safe behaviour stays the default everywhere, including on Vercel.
+- **Why:** The first Vercel deploy crashed because no `SECRET_KEY` was set (B-020). For a public demo, accounts are not relevant. With sign-in off no tokens are issued, so no secret is needed either.
+- **Alternatives:** Default to open on Vercel (rejected, because a forgotten setting would silently leave a deployment wide open). Pre-fill a throwaway secret (rejected, because it is the weakness the startup check exists to catch).
+- **Trade-off:** In this mode anyone with the link can upload and delete anyone else's scans, and the roles feature is bypassed. Uploads are still capped at 4 MB on Vercel, but there is no rate limiting, so someone could fill a small free database. The page says so in a notice. Real sign-in is untouched and still tested.
+
+### D-054: The shared user and workspace are created on first use
+- **Date:** 2026-10-06
+- **Phase:** 9
+- **Decision:** The first request creates a user (`demo@open.local`) and a workspace it owns. Later requests reuse them. No seeding step is needed.
+- **Why:** Fresh databases just work, with no extra command after `alembic upgrade head`.
+- **Details:** The user's password hash is `!`, which is not a valid hash, so it can never match. The address also uses the reserved `.local` domain, which the login and register forms refuse, so nobody can sign in as it or register it. If two first visits collide, the unique email makes one insert fail, and that request rolls back and uses the other one. A test forces that collision.
+- **Trade-off:** A visitor's very first request does a few extra writes.
+
+### D-055: The page asks the server whether sign-in is needed
+- **Date:** 2026-10-06
+- **Phase:** 9
+- **Decision:** New public route `GET /api/v1/config` returns `{auth_required, max_upload_mb}`. The page uses it to skip the sign-in screen, hide sign-out and "create organization", show the demo notice, and print the upload size limit.
+- **Why:** The same page serves both modes, with no separate build. If the call fails, the page assumes sign-in is required, which is the safe guess.
+- **Trade-off:** One extra request on page load. It also publicly states whether sign-in is on, but that is visible anyway from how the page behaves.
+
+### D-056: A bad stored password hash never crashes login
+- **Date:** 2026-10-06
+- **Phase:** 9
+- **Decision:** `verify_password` returns `False` for anything that is not a real hash, instead of raising.
+- **Why:** The shared user's `!` hash would otherwise have caused a 500 if anyone ever reached the login check for it, for example after turning sign-in back on.
+- **Trade-off:** A genuinely corrupted hash in the database now fails quietly as a wrong password, which hides a data problem. That is a small price for never leaking a stack trace at the login form.
+
 ---
 
 ## Verification (phase 7)
@@ -447,6 +477,18 @@ Not covered: real scans, load, many users, a real worker crash mid-job (the swee
 
 Not covered: an actual Vercel deployment. Entry-point detection, static-file promotion, cold starts, the bundle size, and real Neon behaviour are all unconfirmed.
 
+## Verification (phase 9, demo mode)
+
+| Check | Result |
+|---|---|
+| `pytest` | 154 passed (142 before, plus 12 for demo mode) |
+| `node --test viewer/scan-state.test.mjs` | 6 passed |
+| `tools.browser_check --open` (Edge) | Passed. No sign-in form, demo notice shown, shared workspace selected, a scan uploaded, processed and drew, and a reload kept working |
+| `tools.browser_check` (normal mode) | Still passes |
+| Vercel's variables, `AUTH_DISABLED=true`, no `SECRET_KEY`, no `CRON_SECRET`, SQLite | Started. Config reported 4 MB. Small scans were `ready` on upload. The large one got `413`. Broken file failed with a reason. Preview was a valid GLB. Viewer served |
+
+Not covered: the demo mode on Vercel itself with a real Neon database.
+
 ## Trade-offs summary
 | Choice | Gain | Cost |
 |---|---|---|
@@ -476,6 +518,8 @@ Not covered: an actual Vercel deployment. Entry-point detection, static-file pro
 | sessionStorage token | Simple | Readable by injected scripts |
 | Poll every 2s | Simple | Small lag, repeated requests |
 | Vercel mode (DB storage, inline, 4 MB) | Fully testable, no beta services | Small scans only on Vercel |
+| Open demo mode (opt-in) | No accounts, no secrets, works for a demo | Anyone can upload and delete |
+| Page asks the server for config | One page serves both modes | One extra request on load |
 | Manual browser and stack checks | Real browser and real services covered | They can go stale |
 | trimesh over Open3D | Installs on Python 3.13 (to verify) | More hand-written point cloud code |
 
@@ -642,6 +686,24 @@ Use this template for each one.
 - **What happened:** Found while reading the docs, not by a test. Past 4.5 MB, Vercel rejects the request before the app sees it, so the page's error handler would show a bare status text.
 - **Fix:** The page now shows "That file is too large for this deployment." when a 413 has no JSON body. The app's own cap sits at 4 MB so it normally answers first.
 - **Status:** fixed in code, never seen on a real Vercel deployment
+
+### B-020: First Vercel deploy crashed with FUNCTION_INVOCATION_FAILED
+- **Date found:** 2026-10-06
+- **Phase:** 9
+- **What happened:** The deployed page showed `500 FUNCTION_INVOCATION_FAILED`. The runtime log ended in `ValidationError: Set SECRET_KEY to a random value of at least 32 characters when ENVIRONMENT is not 'dev'`. The log's `input_value` held only the Vercel defaults, so no `SECRET_KEY`, `DATABASE_URL` or `CRON_SECRET` had reached that deployment.
+- **Root cause:** The variables were missing on that deployment (not set, or set after the build without a redeploy). My startup check, working as designed, refused to start. On Vercel an exception during import shows only as a blank 500 page, so the real reason is visible only in the logs.
+- **What the log did confirm:** Vercel found `app/main.py`, installed the dependencies and imported every module up to the settings check. That settles entry-point detection and the install, which were open questions.
+- **Fix:** Open demo mode (D-053), so a demo needs no secrets. The README now lists exactly which variables each mode needs and says to redeploy after changing them.
+- **Status:** fixed for the demo path. Not yet seen working on Vercel itself.
+- **Lesson:** Before telling someone to deploy, I reproduced the failure locally, so I could say what the likely cause was. I could not see the log myself and had to ask for it.
+
+### B-021: A test assumed the shared user could reach the login check
+- **Date found:** 2026-10-06
+- **Phase:** 9
+- **What happened:** A test that logged in as `demo@open.local` got `422`, not `401`.
+- **Root cause:** The email check rejects the reserved `.local` domain before any password is looked at. The test was wrong, and the real behaviour is safer than the one I had assumed.
+- **Fix:** The test now accepts either answer for that address, and a separate test feeds junk hash values straight to `verify_password` to cover the crash it was meant to catch (D-056).
+- **Status:** fixed
 
 ### B-002: Test client deprecation warning
 - **Date found:** 2026-10-06

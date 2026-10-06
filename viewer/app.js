@@ -24,6 +24,8 @@ function recall(key) {
 }
 
 const state = {
+  authRequired: true, // replaced by what the server says, below
+  maxUploadMb: null,
   token: recall("token"),
   email: recall("email"),
   orgs: [],
@@ -77,12 +79,16 @@ function show(element, visible) {
 // ---------- Sign in ----------
 
 function renderSignedIn() {
-  const signedIn = Boolean(state.token);
-  show($("auth-card"), !signedIn);
-  show($("app"), signedIn);
-  show($("sign-out"), signedIn);
-  show($("whoami"), signedIn);
+  // With sign-in switched off everyone is "in", and there is nothing to sign out of.
+  const inside = Boolean(state.token) || !state.authRequired;
+  show($("auth-card"), !inside);
+  show($("app"), inside);
+  show($("sign-out"), inside && state.authRequired);
+  show($("whoami"), inside && state.authRequired);
+  show($("org-form"), state.authRequired);
+  show($("demo-note"), !state.authRequired);
   $("whoami").textContent = state.email || "";
+  $("upload-hint").textContent = state.maxUploadMb ? `Up to ${state.maxUploadMb} MB.` : "";
 }
 
 function signOut(message = "") {
@@ -409,5 +415,16 @@ async function loadModel(scanId) {
 
 // ---------- Start ----------
 
-renderSignedIn();
-if (state.token) loadOrgs();
+async function start() {
+  try {
+    const config = await (await fetch(`${API}/config`)).json();
+    state.authRequired = config.auth_required !== false;
+    state.maxUploadMb = config.max_upload_mb;
+  } catch {
+    // If the server cannot say, assume the safe case: sign-in required.
+  }
+  renderSignedIn();
+  if (state.token || !state.authRequired) loadOrgs();
+}
+
+start();

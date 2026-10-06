@@ -2,13 +2,20 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.errors import ApiError, errors
 from app.core.security import create_token, hash_password, verify_password
 from app.db import get_db
 from app.models import User
 from app.schemas import Credentials, TokenOut
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+
+def _auth_enabled() -> None:
+    if settings.auth_disabled:
+        raise ApiError(404, "auth_disabled", "Sign-in is switched off on this deployment.")
+
+
+router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(_auth_enabled)])
 
 
 @router.post("/register", response_model=TokenOut, status_code=201, responses=errors(409))

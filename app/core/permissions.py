@@ -3,6 +3,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.demo import demo_user
 from app.core.errors import ApiError
 from app.core.security import read_token
 from app.db import get_db
@@ -17,6 +19,8 @@ bearer = HTTPBearer(auto_error=False, description="Token from /auth/login or /au
 def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)
 ) -> User:
+    if settings.auth_disabled:
+        return demo_user(db)
     user_id = read_token(credentials.credentials) if credentials else None
     user = db.get(User, user_id) if user_id else None
     if user is None:

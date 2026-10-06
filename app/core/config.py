@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     sweep_enabled: bool = True
     sweep_every_seconds: int = 60
     stuck_after_minutes: int = 15
+    # Open demo mode: no sign-in, and everyone shares one workspace. Off unless asked for.
+    auth_disabled: bool = False
     cron_secret: str = ""  # lets Vercel Cron call the sweep endpoint. Empty means the endpoint is off.
 
     @model_validator(mode="before")
@@ -48,7 +50,9 @@ class Settings(BaseSettings):
         for prefix in ("postgres://", "postgresql://"):
             if self.database_url.startswith(prefix):
                 self.database_url = "postgresql+psycopg://" + self.database_url[len(prefix):]
-        if self.environment != "dev" and (self.secret_key == DEV_SECRET or len(self.secret_key) < 32):
+        # Tokens are not used when sign-in is off, so no secret is needed then.
+        needs_secret = self.environment != "dev" and not self.auth_disabled
+        if needs_secret and (self.secret_key == DEV_SECRET or len(self.secret_key) < 32):
             raise ValueError("Set SECRET_KEY to a random value of at least 32 characters when ENVIRONMENT is not 'dev'.")
         if self.storage_backend not in ("local", "database"):
             raise ValueError("STORAGE_BACKEND must be 'local' or 'database'.")

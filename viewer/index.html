@@ -109,6 +109,10 @@
 
     <div id="app" class="stack hidden">
       <section class="card">
+        <p id="demo-note" class="details hidden" style="margin:0 0 10px">
+          Demo mode: there is no sign-in, and everyone who opens this page shares one workspace.
+          Please do not upload anything private.
+        </p>
         <div class="row">
           <div class="grow">
             <label for="org-select" style="margin-top:0">Organization</label>
@@ -129,6 +133,7 @@
             <form id="upload-form">
               <label for="file">PLY file</label>
               <input id="file" type="file" accept=".ply" required>
+              <p id="upload-hint" class="details" style="margin:4px 0 0"></p>
               <label for="scan-name">Name (optional)</label>
               <input id="scan-name" type="text" maxlength="200">
               <div class="row" style="margin-top:12px">

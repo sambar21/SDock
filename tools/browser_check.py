@@ -19,6 +19,9 @@ from pathlib import Path
 work = Path(tempfile.mkdtemp(prefix="scan_check_"))
 os.environ["DATABASE_URL"] = f"sqlite:///{work / 'check.db'}"
 os.environ["STORAGE_DIR"] = str(work / "storage")
+OPEN_MODE = "--open" in sys.argv  # check the sign-in-free demo mode instead
+if OPEN_MODE:
+    os.environ["AUTH_DISABLED"] = "true"
 
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
@@ -98,6 +101,12 @@ def main() -> None:
         page.on("pageerror", lambda e: problems.append(f"page error: {e}"))
         page.on("console", lambda m: m.type == "error" and problems.append(f"console error: {m.text}"))
         page.goto(BASE)
+
+        if OPEN_MODE:
+            open_mode_flow(page, problems)
+            browser.close()
+            report(problems)
+            return
 
         # Sign up and create an organization.
         page.fill("#email", "check@example.com")
@@ -183,9 +192,50 @@ def main() -> None:
     if "--gif" in sys.argv:
         save_gif(frames, Path("docs") / "demo.gif")
 
+    report(problems)
+
+
+def report(problems: list) -> None:
     print("PROBLEMS:" if problems else "All browser checks passed.")
     for problem in problems:
         print(" -", problem)
+
+
+def open_mode_flow(page, problems: list) -> None:
+    """Sign-in is off: the page should open straight into the shared workspace."""
+    page.wait_for_selector("#app:not(.hidden)", timeout=15000)
+    page.wait_for_selector("#org-select option", state="attached")
+    for hidden in ("#auth-card", "#sign-out", "#whoami", "#org-form"):
+        if page.is_visible(hidden):
+            problems.append(f"{hidden} should not be shown without sign-in")
+    if not page.is_visible("#demo-note"):
+        problems.append("the demo notice is missing")
+    if "Demo workspace" not in page.inner_text("#org-select"):
+        problems.append("the shared workspace was not selected")
+    if "MB" not in page.inner_text("#upload-hint"):
+        problems.append("the upload size hint is missing")
+    page.screenshot(path=SHOTS / "5-open-empty.png")
+
+    for filename, name in [("cloud_small.ply", "Point cloud"), ("bad_nan.ply", "Broken scan")]:
+        page.set_input_files("#file", SAMPLES / filename)
+        page.fill("#scan-name", name)
+        page.click("#upload-button")
+        page.wait_for_selector(f"#scan-list button:has-text('{name}')")
+    page.wait_for_function("document.querySelectorAll('#scan-list .badge.ready').length === 1", timeout=30000)
+    page.wait_for_function("document.querySelectorAll('#scan-list .badge.failed').length === 1", timeout=30000)
+
+    page.click("#scan-list button:has-text('Point cloud')")
+    page.wait_for_function("document.getElementById('stage-message').classList.contains('hidden')", timeout=15000)
+    page.wait_for_timeout(500)
+    if not canvas_has_picture(page):
+        problems.append("the model did not draw")
+    page.screenshot(path=SHOTS / "5-open-model.png")
+
+    # Reloading must still work, with nothing remembered in the browser.
+    page.reload()
+    page.wait_for_selector("#scan-list button:has-text('Point cloud')", timeout=15000)
+    if page.is_visible("#auth-card"):
+        problems.append("the sign-in form appeared after a reload")
 
 
 if __name__ == "__main__":
